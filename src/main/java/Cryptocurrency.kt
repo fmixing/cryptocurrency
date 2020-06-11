@@ -11,38 +11,76 @@ private val context = ExperimentalCoroutineDispatcher(corePoolSize = 2, maxPoolS
 
 class TransactionInfo(val sender: processId, val receiver: processId, val transferValue: money, val transferId: Int)
 
+/**
+ * Реализация алгоритма перевода активов (алгоритма криптовалюты) без реализации протокола консенсуса из статьи
+ * R. Guerraoui, P. Kuznetsov, M.Monti, M. Pavlovič, D.-A. Seredinschi, The Consensus Number of a Cryptocurrency,
+ * https://arxiv.org/pdf/1906.05574.pdf.
+ *
+ * Все процессы видят какое-то состояние системы, и основываясь на этом, принимают решения, принимать ли очередную транзакцию
+ * или нет. Было показано, что для симметричной системы кворумов отсутствует двойное расходование.
+ * В моей работе рассматривается эта задача (задача криптовалюты) в асимметричных системах кворумов.
+ */
 class Cryptocurrency(private val distributedSystem: DistributedSystem,
                      private val process: processId) {
     private val broadcast : Broadcast = Broadcast(distributedSystem.getChannels(),
             distributedSystem.getChannels()[process]!!, process, distributedSystem.getQuorumSystem()[process]!!, this::deliver)
 
+    /**
+     * Количество провалидированных процессом [process] исходящих транзакций каждого из процессов системы.
+     */
     private val seq: IntArray = IntArray(distributedSystem.getProcesses().size)
 
+    /**
+     * Количество транзакций каждого из процессов системы, которые процесс [process] получил в процессе бродкаста.
+     */
     private val rec: IntArray = IntArray(distributedSystem.getProcesses().size)
 
+    /**
+     * Множество провалидированных процессом [process] входящих и исходящих транзакций.
+     */
     private val hist: ConcurrentMap<processId, MutableSet<TransactionInfo>> = ConcurrentHashMap()
 
-    private val messageToDeliver: ConcurrentMap<processId, TreeSet<Message>> = ConcurrentHashMap();
+    /**
+     * Множество входящих транзакций процесса [process] с момента прошлого успешного перевода денег через операцию [transfer].
+     */
+    private val deps: MutableSet<TransactionInfo> = ConcurrentHashMap.newKeySet()
 
-    @OptIn(ExperimentalStdlibApi::class)
-    private val deps: MutableSet<TransactionInfo> = HashSet()
+    /**
+     * Множество непровалидированных транзакций, которые процесс [process] получил в процессе бродкаста.
+     */
+    private val toValidate: MutableSet<Message> = ConcurrentHashMap.newKeySet()
 
-    @OptIn(ExperimentalStdlibApi::class)
-    private val toValidate: MutableSet<Message> = HashSet()
+    /**
+     * Сообщения от каждого из процессов системы, которые процесс [process] должен обработать в порядке source order
+     * (то есть все процессы системы обязаны их обработать в одном и том же порядке).
+     */
+    private val messageToDeliver: ConcurrentMap<processId, TreeSet<Message>> = ConcurrentHashMap()
 
+    /**
+     * Мьютекс, играющий роль CountDownLatch: он позволяет сообщать из корутины [validatingCoroutine], что перевод
+     * процесса [process] завершился успешно.
+     */
     private var waitingTransactionCompletion = Mutex(true)
 
+    /**
+     * Канал для оповещения о том, что было получено новое сообщение, для которого необходимо выполнить валидацию.
+     * Играет роль блокирующей очереди.
+     */
     private val messagesToValidate = Channel<Message>(Channel.UNLIMITED)
 
+    /**
+     * Мьютекс, дающий гарантию, что корректные процессы не будут выполнять одновременно несколько операций перевода денег,
+     * то есть что процессы, использующие криптовалюту – "однопоточные".
+     */
     private val mutex = Mutex()
 
     @ExperimentalCoroutinesApi
     @InternalCoroutinesApi
-    private val runCoroutine = CoroutineScope(context).launch { processToValidate() }
+    private val validatingCoroutine = CoroutineScope(context).launch { processToValidate() }
 
-    public suspend fun read(process: processId): Int = mutex.withLock { balance(process) }
+    suspend fun read(process: processId): Int = mutex.withLock { balance(process) }
 
-    public suspend fun transfer(receiver: processId, transferValue: Int) : Boolean = mutex.withLock {
+    suspend fun transfer(receiver: processId, transferValue: Int) : Boolean = mutex.withLock {
         if (balance(process) < transferValue) {
             return false
         }
@@ -52,7 +90,6 @@ class Cryptocurrency(private val distributedSystem: DistributedSystem,
         broadcast.broadcast(Message(transactionInfo, deps.toSet()))
         deps.clear()
         waitingTransactionCompletion.lock()
-
         return true
     }
 
@@ -76,17 +113,17 @@ class Cryptocurrency(private val distributedSystem: DistributedSystem,
     @ExperimentalCoroutinesApi
     private suspend fun processToValidate() {
         while (true) {
-            val received = messagesToValidate.receiveOrNull() ?: return
+            val received = messagesToValidate.receive()
             toValidate += received
             val iterator = toValidate.iterator()
             while (iterator.hasNext()) {
                 val m = iterator.next()
                 val validated = validate(m)
                 if (validated) {
-                    hist[m.sender]!! += m.deps
-                    hist[m.sender]!! += m.transactionInfo
+                    hist.getOrPut(m.sender) { HashSet() } += m.deps
+                    hist.getOrPut(m.sender) { HashSet() } += m.transactionInfo
                     seq[m.sender] = m.transferId
-                    hist[m.receiver]!! += m.transactionInfo
+                    hist.getOrPut(m.receiver) { HashSet() } += m.transactionInfo
 
                     if (process == m.receiver) {
                         deps += m.transactionInfo
@@ -100,13 +137,12 @@ class Cryptocurrency(private val distributedSystem: DistributedSystem,
         }
     }
 
-    private fun validate(next: Message): Boolean {
-        val hist = hist.getOrPut(next.sender) { HashSet() }
-        return seq[next.sender] == next.transferId + 1
-                && balance(next.sender) > next.transferValue
-                && next.deps.map { hist.contains(it) }.all{it}
+    private fun validate(m: Message): Boolean {
+        val hist = hist.getOrPut(m.sender) { HashSet() }
+        return seq[m.sender] + 1 == m.transferId // эта транзакция следующая за той, которую процесс уже провалидировал
+                && balance(m.sender) >= m.transferValue // на аккаунте процесса хватает денег
+                && m.deps.map { hist.contains(it) }.all{it} // все зависимости транзакции процесс уже провалидировал
     }
-
 
     private fun balance(process: processId): Int {
         val hist = hist.getOrPut(process) { HashSet() }

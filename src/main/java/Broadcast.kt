@@ -24,7 +24,7 @@ class Broadcast(private val channels: Map<processId, Channel<ChannelMessage>>,
         channels.values.forEach { it.send(Bcast(processId, m)) }
     }
 
-    suspend fun receive() {
+    private suspend fun receive() {
         while (true) {
             val message = processChannel.receive()
             process(message)
