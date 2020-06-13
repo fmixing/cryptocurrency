@@ -159,72 +159,75 @@ class BroadcastTest {
         }
         return Pair(mutex1, mutex2)
     }
+}
 
-    private suspend fun sendMaliciousMessages(intactSetNumber: Int, ds: SymmetricDistributedSystem, sameMessagesForIntactSet: Boolean) {
-        val same = if (sameMessagesForIntactSet) 0 else 1
-        val maliciousProcessId = intactSetNumber * 2
-        repeat(intactSetNumber) {
-            ds.getChannel(it * 2).send(Bcast(maliciousProcessId,
-                    Message(TransactionInfo(maliciousProcessId, it * 2, 10, 1), setOf())))
-            ds.getChannel(it * 2 + 1).send(Bcast(maliciousProcessId,
-                    Message(TransactionInfo(maliciousProcessId, it * 2 + same, 10, 1), setOf())))
+suspend fun sendMaliciousMessages(intactSetNumber: Int, ds: DistributedSystem, sameMessagesForIntactSet: Boolean) {
+    val same = if (sameMessagesForIntactSet) 0 else 1
+    val maliciousProcessId = intactSetNumber * 2
+    repeat(intactSetNumber) {
+        ds.getChannel(it * 2).send(Bcast(maliciousProcessId,
+                Message(TransactionInfo(maliciousProcessId, it * 2, 10, 1), setOf())))
+        ds.getChannel(it * 2 + 1).send(Bcast(maliciousProcessId,
+                Message(TransactionInfo(maliciousProcessId, it * 2 + same, 10, 1), setOf())))
+    }
+    repeat(intactSetNumber) {
+        ds.getChannel(it * 2).send(Echo(maliciousProcessId,
+                Message(TransactionInfo(maliciousProcessId, it * 2, 10, 1), setOf())))
+        ds.getChannel(it * 2 + 1).send(Echo(maliciousProcessId,
+                Message(TransactionInfo(maliciousProcessId, it * 2 + same, 10, 1), setOf())))
+    }
+    repeat(intactSetNumber) {
+        ds.getChannel(it * 2).send(Ready(maliciousProcessId,
+                Message(TransactionInfo(maliciousProcessId, it * 2, 10, 1), setOf())))
+        ds.getChannel(it * 2 + 1).send(Ready(maliciousProcessId,
+                Message(TransactionInfo(maliciousProcessId, it * 2 + same, 10, 1), setOf())))
+    }
+}
+
+internal class SymmetricDistributedSystem(private val intactSets: Int = 1) : DistributedSystem {
+    private val channels: MutableMap<processId, Channel<ChannelMessage>> = HashMap()
+    private val qs: MutableMap<processId, FBQS> = HashMap()
+    private val balances: MutableMap<processId, money> = HashMap()
+
+    init {
+        repeat(intactSets * 2) {
+            channels[it] = Channel(Channel.UNLIMITED)
         }
-        repeat(intactSetNumber) {
-            ds.getChannel(it * 2).send(Echo(maliciousProcessId,
-                    Message(TransactionInfo(maliciousProcessId, it * 2, 10, 1), setOf())))
-            ds.getChannel(it * 2 + 1).send(Echo(maliciousProcessId,
-                    Message(TransactionInfo(maliciousProcessId, it * 2 + same, 10, 1), setOf())))
+        channels[intactSets * 2] = Channel(Channel.UNLIMITED)
+        repeat(intactSets * 2) {
+            qs[it] = SymmetricFBQS()
         }
-        repeat(intactSetNumber) {
-            ds.getChannel(it * 2).send(Ready(maliciousProcessId,
-                    Message(TransactionInfo(maliciousProcessId, it * 2, 10, 1), setOf())))
-            ds.getChannel(it * 2 + 1).send(Ready(maliciousProcessId,
-                    Message(TransactionInfo(maliciousProcessId, it * 2 + same, 10, 1), setOf())))
+        qs[intactSets * 2] = SymmetricFBQS()
+        repeat(intactSets * 2) {
+            balances[it] = 100
         }
+        balances[intactSets * 2] = 100
     }
 
-    private class SymmetricDistributedSystem(private val intactSets: Int = 1) : DistributedSystem {
-        private val channels: MutableMap<processId, Channel<ChannelMessage>> = HashMap()
-        private val qs: MutableMap<processId, FBQS> = HashMap()
-        private val balances: MutableMap<processId, money> = HashMap()
+    override fun getProcesses(): Set<processId> = channels.keys
 
-        init {
-            repeat(intactSets * 2) {
-                channels[it] = Channel(Channel.UNLIMITED)
+    override fun getChannels(): Map<processId, Channel<ChannelMessage>> = channels
+
+    override fun getQuorumSystem(): Map<processId, FBQS> = qs
+
+    override fun getBalances(): Map<processId, money> = balances
+
+    private inner class SymmetricFBQS : FBQS {
+        override fun hasQuorum(process: processId, processes: Set<processId>): Boolean {
+            var hasQuorum = false
+            repeat(intactSets) {
+                hasQuorum = hasQuorum || processes.containsAll(setOf(it * 2, it * 2 + 1)) && (process == it * 2 || process == it * 2 + 1)
             }
-            repeat(intactSets * 2) {
-                qs[it] = SymmetricFBQS()
-            }
-            repeat(intactSets * 2) {
-                balances[it] = 100
-            }
+            return hasQuorum
         }
 
-        override fun getProcesses(): Set<processId> = channels.keys
-
-        override fun getChannels(): Map<processId, Channel<ChannelMessage>> = channels
-
-        override fun getQuorumSystem(): Map<processId, FBQS> = qs
-
-        override fun getBalances(): Map<processId, money> = balances
-
-        private inner class SymmetricFBQS : FBQS {
-            override fun hasQuorum(process: processId, processes: Set<processId>): Boolean {
-                var hasQuorum = false
-                repeat(intactSets) {
-                    hasQuorum = hasQuorum || processes.containsAll(setOf(it * 2, it * 2 + 1)) && (process == it * 2 || process == it * 2 + 1)
-                }
-                return hasQuorum
+        override fun hasBlockingSet(process: processId, processes: Set<processId>): Boolean {
+            var hasBlockingSet = false
+            repeat(intactSets) {
+                hasBlockingSet = hasBlockingSet || processes.contains(it * 2) && process == it * 2 + 1 ||
+                        processes.contains(it * 2 + 1) && process == it * 2
             }
-
-            override fun hasBlockingSet(process: processId, processes: Set<processId>): Boolean {
-                var hasBlockingSet = false
-                repeat(intactSets) {
-                    hasBlockingSet = hasBlockingSet || processes.contains(it * 2) && process == it * 2 + 1 ||
-                            processes.contains(it * 2 + 1) && process == it * 2
-                }
-                return hasBlockingSet
-            }
+            return hasBlockingSet
         }
     }
 }

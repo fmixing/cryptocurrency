@@ -21,44 +21,44 @@ class TransactionInfo(val sender: processId, val receiver: processId, val transf
  * В моей работе рассматривается эта задача (задача криптовалюты) в асимметричных системах кворумов.
  */
 class Cryptocurrency(private val ds: DistributedSystem,
-                     private val process: processId) {
+                     val process: processId) {
     private val broadcast : Broadcast = Broadcast(process, ds.getChannel(process), ds.getProcessQuorumSystem(process),
             ds.getChannels(), this::deliver)
 
     /**
-     * Количество провалидированных процессом [process] исходящих транзакций каждого из процессов системы.
+     * Количество провалидированных процессом [processMessage] исходящих транзакций каждого из процессов системы.
      */
     private val seq: IntArray = IntArray(ds.getProcesses().size)
 
     /**
-     * Количество транзакций каждого из процессов системы, которые процесс [process] получил в процессе бродкаста.
+     * Количество транзакций каждого из процессов системы, которые процесс [processMessage] получил в процессе бродкаста.
      */
     private val rec: IntArray = IntArray(ds.getProcesses().size)
 
     /**
-     * Множество провалидированных процессом [process] входящих и исходящих транзакций.
+     * Множество провалидированных процессом [processMessage] входящих и исходящих транзакций.
      */
     private val hist: ConcurrentMap<processId, MutableSet<TransactionInfo>> = ConcurrentHashMap()
 
     /**
-     * Множество входящих транзакций процесса [process] с момента прошлого успешного перевода денег через операцию [transfer].
+     * Множество входящих транзакций процесса [processMessage] с момента прошлого успешного перевода денег через операцию [transfer].
      */
     private val deps: MutableSet<TransactionInfo> = ConcurrentHashMap.newKeySet()
 
     /**
-     * Множество непровалидированных транзакций, которые процесс [process] получил в процессе бродкаста.
+     * Множество непровалидированных транзакций, которые процесс [processMessage] получил в процессе бродкаста.
      */
     private val toValidate: MutableSet<Message> = ConcurrentHashMap.newKeySet()
 
     /**
-     * Сообщения от каждого из процессов системы, которые процесс [process] должен обработать в порядке source order
+     * Сообщения от каждого из процессов системы, которые процесс [processMessage] должен обработать в порядке source order
      * (то есть все процессы системы обязаны их обработать в одном и том же порядке).
      */
     private val messageToDeliver: ConcurrentMap<processId, TreeSet<Message>> = ConcurrentHashMap()
 
     /**
      * Мьютекс, играющий роль CountDownLatch: он позволяет сообщать из корутины [validatingCoroutine], что перевод
-     * процесса [process] завершился успешно.
+     * процесса [processMessage] завершился успешно.
      */
     private var waitingTransactionCompletion = Mutex(true)
 
@@ -117,24 +117,27 @@ class Cryptocurrency(private val ds: DistributedSystem,
             toValidate += received
             val iterator = toValidate.iterator()
             while (iterator.hasNext()) {
-                val m = iterator.next()
-                val validated = validate(m)
-                if (validated) {
-                    hist.getOrPut(m.sender) { HashSet() } += m.deps
-                    hist.getOrPut(m.sender) { HashSet() } += m.transactionInfo
-                    seq[m.sender] = m.transferId
-                    hist.getOrPut(m.receiver) { HashSet() } += m.transactionInfo
-
-                    if (process == m.receiver) {
-                        deps += m.transactionInfo
-                    }
-                    if (process == m.sender) {
-                        waitingTransactionCompletion.unlock()
-                    }
-                    iterator.remove()
-                }
+                if (processMessage(iterator.next())) iterator.remove()
             }
         }
+    }
+
+    private fun processMessage(m: Message): Boolean {
+        val validated = validate(m)
+        if (!validated) return false
+
+        hist.getOrPut(m.sender) { HashSet() } += m.deps
+        hist.getOrPut(m.sender) { HashSet() } += m.transactionInfo
+        seq[m.sender] = m.transferId
+        hist.getOrPut(m.receiver) { HashSet() } += m.transactionInfo
+
+        if (process == m.receiver) {
+            deps += m.transactionInfo
+        }
+        if (process == m.sender) {
+            waitingTransactionCompletion.unlock()
+        }
+        return true
     }
 
     private fun validate(m: Message): Boolean {
