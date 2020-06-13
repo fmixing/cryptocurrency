@@ -20,20 +20,20 @@ class TransactionInfo(val sender: processId, val receiver: processId, val transf
  * или нет. Было показано, что для симметричной системы кворумов отсутствует двойное расходование.
  * В моей работе рассматривается эта задача (задача криптовалюты) в асимметричных системах кворумов.
  */
-class Cryptocurrency(private val distributedSystem: DistributedSystem,
+class Cryptocurrency(private val ds: DistributedSystem,
                      private val process: processId) {
-    private val broadcast : Broadcast = Broadcast(distributedSystem.getChannels(),
-            distributedSystem.getChannels()[process]!!, process, distributedSystem.getQuorumSystem()[process]!!, this::deliver)
+    private val broadcast : Broadcast = Broadcast(process, ds.getChannel(process), ds.getProcessQuorumSystem(process),
+            ds.getChannels(), this::deliver)
 
     /**
      * Количество провалидированных процессом [process] исходящих транзакций каждого из процессов системы.
      */
-    private val seq: IntArray = IntArray(distributedSystem.getProcesses().size)
+    private val seq: IntArray = IntArray(ds.getProcesses().size)
 
     /**
      * Количество транзакций каждого из процессов системы, которые процесс [process] получил в процессе бродкаста.
      */
-    private val rec: IntArray = IntArray(distributedSystem.getProcesses().size)
+    private val rec: IntArray = IntArray(ds.getProcesses().size)
 
     /**
      * Множество провалидированных процессом [process] входящих и исходящих транзакций.
@@ -154,6 +154,6 @@ class Cryptocurrency(private val distributedSystem: DistributedSystem,
                 .filter { info -> info.receiver == process }
                 .mapToInt { it.transferValue }
                 .sum()
-        return distributedSystem.getBalances()[process]!! + incoming - outgoing
+        return ds.getBalance(process) + incoming - outgoing
     }
 }

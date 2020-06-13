@@ -1,4 +1,5 @@
 import kotlinx.coroutines.channels.*
+import java.lang.IllegalStateException
 
 interface DistributedSystem {
     /**
@@ -22,6 +23,12 @@ interface DistributedSystem {
     fun getBalances() : Map<processId, money>
 }
 
+fun DistributedSystem.getChannel(process: processId) = getChannels()[process] ?: throw IllegalStateException("Process $process doesn't exist")
+
+fun DistributedSystem.getBalance(process: processId) = getBalances()[process] ?: throw IllegalStateException("Process $process doesn't exist")
+
+fun DistributedSystem.getProcessQuorumSystem(process: processId) = getQuorumSystem()[process] ?: throw IllegalStateException("Process $process doesn't exist")
+
 open class ChannelMessage(val process: processId, val message: Message)
 
 class Message(val transactionInfo: TransactionInfo, val deps: Set<TransactionInfo>) {
@@ -29,6 +36,30 @@ class Message(val transactionInfo: TransactionInfo, val deps: Set<TransactionInf
     val receiver = transactionInfo.receiver
     val transferId = transactionInfo.transferId
     val transferValue = transactionInfo.transferValue
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+
+        other as Message
+
+        if (deps != other.deps) return false
+        if (sender != other.sender) return false
+        if (receiver != other.receiver) return false
+        if (transferId != other.transferId) return false
+        if (transferValue != other.transferValue) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = deps.hashCode()
+        result = 31 * result + sender
+        result = 31 * result + receiver
+        result = 31 * result + transferId
+        result = 31 * result + transferValue
+        return result
+    }
 }
 
 /**
@@ -105,8 +136,7 @@ class SymmetricDistributedSystem : DistributedSystem {
 /**
  * "Мажоритарная" система кворумов: в ней кворумом считается больше половины процессов.
  */
-class MajoritySymmetricDistributedSystem : DistributedSystem {
-    private val numberOfProcesses = 20
+class MajoritySymmetricDistributedSystem(private val numberOfProcesses: Int = 20) : DistributedSystem {
     private val channels: MutableMap<processId, Channel<ChannelMessage>> = HashMap()
     private val qs: MutableMap<processId, FBQS> = HashMap()
     private val balances: MutableMap<processId, money> = HashMap()
@@ -133,7 +163,7 @@ class MajoritySymmetricDistributedSystem : DistributedSystem {
 
     private inner class SymmetricFBQS : FBQS {
         override fun hasQuorum(process: processId, processes: Set<processId>): Boolean {
-            return processes.size > numberOfProcesses / 2
+            return processes.contains(process) && processes.size > numberOfProcesses / 2
         }
 
         override fun hasBlockingSet(process: processId, processes: Set<processId>): Boolean {

@@ -1,21 +1,47 @@
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.*
 import kotlinx.coroutines.scheduling.*
-import kotlin.reflect.*
 
 @InternalCoroutinesApi
 private val context = ExperimentalCoroutineDispatcher(corePoolSize = 2, maxPoolSize = 2)
 
-class Broadcast(private val channels: Map<processId, Channel<ChannelMessage>>,
+/**
+ * Адаптированный бродкаст из статьи Garcı́a-Pérez Á., Gotsman A., Federated Byzantine Quorum Systems
+ * https://arxiv.org/pdf/1811.03642.pdf.
+ * В алгоритм были добавлены процессы бродкаста [BcastId], которые включают в себя идентификатор транзакции. Это позволяет
+ * "переплетенным" процессам (процессам, чьи кворумы пересекаются по корректным процессам) не принимать
+ * в разных процессах бродкаста транзакции с одинаковым идентификатором.
+ */
+class Broadcast(private val processId: processId,
                 private val processChannel: Channel<ChannelMessage>,
-                private val processId: processId,
                 private val quorumSystem: FBQS,
-                private val deliver: KSuspendFunction1<Message, Unit>) {
-    private val echoed : MutableMap<BroadcastId, Boolean> = HashMap()
-    private val readied : MutableMap<BroadcastId, Boolean> = HashMap()
-    private val delivered : MutableMap<BroadcastId, Boolean> = HashMap()
-    private val receivedEcho : MutableMap<BroadcastId, MutableMap<Message, MutableSet<processId>>> = HashMap()
-    private val receivedReady : MutableMap<BroadcastId, MutableMap<Message, MutableSet<processId>>> = HashMap()
+                private val channels: Map<processId, Channel<ChannelMessage>>,
+                private val deliver: suspend (Message) -> Unit) {
+    /**
+     * Таблица, хранящая информацию, было ли отправлено сообщение [Echo] в процессе бродкаста [BcastId]
+     */
+    private val echoed : MutableMap<BcastId, Boolean> = HashMap()
+
+    /**
+     * Таблица, хранящая информацию, было ли отправлено сообщение [Ready] в процессе бродкаста [BcastId]
+     */
+    private val readied : MutableMap<BcastId, Boolean> = HashMap()
+
+    /**
+     * Таблица, хранящая информацию, ыло ли доставлено какое-то сообщение в процессе бродкаста [BcastId]
+     */
+    private val delivered : MutableMap<BcastId, Boolean> = HashMap()
+
+    /**
+     * Таблица, хранящая информацию, какие сообщения [Echo] были получены от каких процессов в процессе бродкаста [BcastId]
+     */
+    private val receivedEcho : MutableMap<BcastId, MutableMap<Message, MutableSet<processId>>> = HashMap()
+
+    /**
+     * Таблица, хранящая информацию, какие сообщения [Ready] были получены от каких процессов в процессе бродкаста [BcastId]
+     */
+    private val receivedReady : MutableMap<BcastId, MutableMap<Message, MutableSet<processId>>> = HashMap()
+
     @ExperimentalCoroutinesApi
     @InternalCoroutinesApi
     private val runCoroutine = CoroutineScope(context).launch { receive() }
@@ -32,7 +58,7 @@ class Broadcast(private val channels: Map<processId, Channel<ChannelMessage>>,
     }
 
     private suspend fun process(cm: ChannelMessage) {
-        val broadcastId = BroadcastId(cm.message.sender, cm.message.transferId)
+        val broadcastId = BcastId(cm.message.sender, cm.message.transferId)
         when (cm) {
             is Bcast -> processBcast(broadcastId, cm)
             is Echo -> processEcho(broadcastId, cm)
@@ -40,26 +66,26 @@ class Broadcast(private val channels: Map<processId, Channel<ChannelMessage>>,
         }
     }
 
-    private suspend fun processBcast(id: BroadcastId, m: ChannelMessage) {
+    private suspend fun processBcast(id: BcastId, m: ChannelMessage) {
         if (!echoed.getOrElse(id) { false }) {
-            channels.values.forEach { it.send(Echo(processId, m.message)) }
             echoed[id] = true
+            channels.values.forEach { it.send(Echo(processId, m.message)) }
         }
     }
 
-    private suspend fun processEcho(id: BroadcastId, m: ChannelMessage) {
+    private suspend fun processEcho(id: BcastId, m: ChannelMessage) {
         if (readied.getOrElse(id) { false }) return
 
         val echoedProcess: MutableSet<processId> = receivedEcho.getOrPut(id){ HashMap() }.getOrPut(m.message){ HashSet() }
         echoedProcess += m.process
         val hasQuorum = quorumSystem.hasQuorum(processId, echoedProcess)
         if (hasQuorum) {
-            channels.values.forEach { it.send(Ready(processId, m.message)) }
             readied[id] = true
+            channels.values.forEach { it.send(Ready(processId, m.message)) }
         }
     }
 
-    private suspend fun processReady(id: BroadcastId, m: ChannelMessage) {
+    private suspend fun processReady(id: BcastId, m: ChannelMessage) {
         if (delivered.getOrElse(id) { false }) return
 
         val readiedProcess: MutableSet<processId> = receivedReady.getOrPut(id){ HashMap() }.getOrPut(m.message){ HashSet() }
@@ -73,18 +99,18 @@ class Broadcast(private val channels: Map<processId, Channel<ChannelMessage>>,
 
         val hasBlockingSet = quorumSystem.hasBlockingSet(processId, readiedProcess)
         if (hasBlockingSet && !readied.getOrElse(id) { false }) {
-            channels.values.forEach { it.send(Ready(processId, m.message)) }
             readied[id] = true
+            channels.values.forEach { it.send(Ready(processId, m.message)) }
         }
     }
 }
 
-private class BroadcastId(private val sender: processId, private val transferId: Int) {
+private class BcastId(private val sender: processId, private val transferId: Int) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
 
-        other as BroadcastId
+        other as BcastId
 
         if (sender != other.sender) return false
         if (transferId != other.transferId) return false
@@ -99,10 +125,10 @@ private class BroadcastId(private val sender: processId, private val transferId:
     }
 }
 
-private class Bcast(process: processId, m: Message): ChannelMessage(process, m)
+class Bcast(process: processId, m: Message): ChannelMessage(process, m)
 
-private class Echo(process: processId, m: Message): ChannelMessage(process, m)
+class Echo(process: processId, m: Message): ChannelMessage(process, m)
 
-private class Ready(process: processId, m: Message): ChannelMessage(process, m)
+class Ready(process: processId, m: Message): ChannelMessage(process, m)
 
 //BroadCast<BId, Message>
