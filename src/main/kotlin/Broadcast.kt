@@ -105,6 +105,45 @@ class Broadcast(private val processId: processId,
     }
 }
 
+open class ChannelMessage(val process: processId, val message: Message)
+
+class Bcast(process: processId, m: Message): ChannelMessage(process, m)
+
+class Echo(process: processId, m: Message): ChannelMessage(process, m)
+
+class Ready(process: processId, m: Message): ChannelMessage(process, m)
+
+class Message(val transactionInfo: TransactionInfo, val deps: Set<TransactionInfo>) {
+    val sender = transactionInfo.sender
+    val receiver = transactionInfo.receiver
+    val transferId = transactionInfo.transferId
+    val transferValue = transactionInfo.transferValue
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+
+        other as Message
+
+        if (deps != other.deps) return false
+        if (sender != other.sender) return false
+        if (receiver != other.receiver) return false
+        if (transferId != other.transferId) return false
+        if (transferValue != other.transferValue) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = deps.hashCode()
+        result = 31 * result + sender
+        result = 31 * result + receiver
+        result = 31 * result + transferId
+        result = 31 * result + transferValue
+        return result
+    }
+}
+
 private class BcastId(private val sender: processId, private val transferId: Int) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -124,11 +163,3 @@ private class BcastId(private val sender: processId, private val transferId: Int
         return result
     }
 }
-
-class Bcast(process: processId, m: Message): ChannelMessage(process, m)
-
-class Echo(process: processId, m: Message): ChannelMessage(process, m)
-
-class Ready(process: processId, m: Message): ChannelMessage(process, m)
-
-//BroadCast<BId, Message>

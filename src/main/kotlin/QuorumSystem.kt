@@ -9,7 +9,3 @@ interface FBQS {
      */
     fun hasBlockingSet(process: processId, processes: Set<processId>) : Boolean
 }
-
-typealias processId = Int
-
-typealias money = Int

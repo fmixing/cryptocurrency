@@ -20,7 +20,7 @@ class TransactionInfo(val sender: processId, val receiver: processId, val transf
  * или нет. Было показано, что для симметричной системы кворумов отсутствует двойное расходование.
  * В моей работе рассматривается эта задача (задача криптовалюты) в асимметричных системах кворумов.
  */
-class Cryptocurrency(private val ds: DistributedSystem,
+class Cryptocurrency(private val ds: DistributedSystem<ChannelMessage>,
                      val process: processId) {
     private val broadcast : Broadcast = Broadcast(process, ds.getChannel(process), ds.getProcessQuorumSystem(process),
             ds.getChannels(), this::deliver)

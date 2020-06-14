@@ -99,7 +99,7 @@ class BroadcastTest {
      */
     @Test
     fun testTotalityAndValidity() = runBlocking {
-        val ds = SymmetricDistributedSystem()
+        val ds = SymmetricDistributedSystemWithoutQI()
         val delivered = HashSet<Message>()
         val mutex: Pair<Mutex, Mutex> = createIntactSets(0, ds, delivered)
         sendMaliciousMessages(1, ds, false)
@@ -120,7 +120,7 @@ class BroadcastTest {
     @Test
     fun testTotalityAndValidityForMultipleIntactSets() = runBlocking {
         val intactSetNumber = 4
-        val ds = SymmetricDistributedSystem(intactSetNumber)
+        val ds = SymmetricDistributedSystemWithoutQI(intactSetNumber)
         val delivered = HashMap<Int, MutableSet<Message>>()
         val mutex = ArrayList<Pair<Mutex, Mutex>>()
         repeat(intactSetNumber) {
@@ -144,7 +144,7 @@ class BroadcastTest {
         }
     }
 
-    private fun createIntactSets(intactSetId: Int, ds: SymmetricDistributedSystem, delivered: MutableSet<Message>): Pair<Mutex, Mutex> {
+    private fun createIntactSets(intactSetId: Int, ds: DistributedSystem<ChannelMessage>, delivered: MutableSet<Message>): Pair<Mutex, Mutex> {
         val mutex1 = Mutex(true)
         val mutex2 = Mutex(true)
         val processId1 = intactSetId * 2
@@ -161,7 +161,7 @@ class BroadcastTest {
     }
 }
 
-suspend fun sendMaliciousMessages(intactSetNumber: Int, ds: DistributedSystem, sameMessagesForIntactSet: Boolean) {
+suspend fun sendMaliciousMessages(intactSetNumber: Int, ds: DistributedSystem<ChannelMessage>, sameMessagesForIntactSet: Boolean) {
     val same = if (sameMessagesForIntactSet) 0 else 1
     val maliciousProcessId = intactSetNumber * 2
     repeat(intactSetNumber) {
@@ -184,7 +184,10 @@ suspend fun sendMaliciousMessages(intactSetNumber: Int, ds: DistributedSystem, s
     }
 }
 
-internal class SymmetricDistributedSystem(private val intactSets: Int = 1) : DistributedSystem {
+/**
+ * Симметричная система кворумов без требования о пересечении кворумов.
+ */
+internal class SymmetricDistributedSystemWithoutQI(private val intactSets: Int = 1) : DistributedSystem<ChannelMessage> {
     private val channels: MutableMap<processId, Channel<ChannelMessage>> = HashMap()
     private val qs: MutableMap<processId, FBQS> = HashMap()
     private val balances: MutableMap<processId, money> = HashMap()

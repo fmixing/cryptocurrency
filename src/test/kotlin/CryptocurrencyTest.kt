@@ -98,7 +98,7 @@ class CryptocurrencyTest {
     @Test
     fun testTotalityIntactSets() = runBlocking{
         val intactSets = 1
-        val ds = SymmetricDistributedSystem(intactSets)
+        val ds = SymmetricDistributedSystemWithoutQI(intactSets)
         val cryptocurrencies = ArrayList<Cryptocurrency>()
         repeat(intactSets) {
             cryptocurrencies += Cryptocurrency(ds, it * 2)
@@ -120,7 +120,7 @@ class CryptocurrencyTest {
     @Test
     fun testKSpending() = runBlocking{
         val intactSets = 4
-        val ds = SymmetricDistributedSystem(intactSets)
+        val ds = SymmetricDistributedSystemWithoutQI(intactSets)
         val cryptocurrencies = ArrayList<Cryptocurrency>()
         repeat(intactSets) {
             cryptocurrencies += Cryptocurrency(ds, it * 2)

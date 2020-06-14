@@ -33,7 +33,7 @@ test {
     useJUnitPlatform()
 }
 
-task runSymmetricScenario(type : JavaExec) {
-    main = 'RunSymmetricScenario.kt'
+task runCorrectScenario(type : JavaExec) {
+    main = 'RunCorrectScenario'
     classpath sourceSets.main.runtimeClasspath
 }
