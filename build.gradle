@@ -37,3 +37,8 @@ task runCorrectScenario(type : JavaExec) {
     main = 'RunCorrectScenario'
     classpath sourceSets.main.runtimeClasspath
 }
+
+task runMaliciousScenario(type : JavaExec) {
+    main = 'RunMaliciousScenario'
+    classpath sourceSets.main.runtimeClasspath
+}

@@ -3,6 +3,7 @@ import kotlinx.coroutines.channels.*
 import kotlinx.coroutines.selects.*
 import kotlinx.coroutines.sync.*
 import org.junit.jupiter.api.*
+import org.junit.jupiter.api.Assertions.*
 
 @InternalCoroutinesApi
 class BroadcastTest {
@@ -77,7 +78,7 @@ class BroadcastTest {
         ds.getChannel(0).send(Ready(1, m))
         ds.getChannel(0).send(Ready(2, m))
         delay(10)
-        check(!delivered.contains(m))
+        assertTrue(!delivered.contains(m))
     }
 
     /**
@@ -109,7 +110,7 @@ class BroadcastTest {
             mutex.second.lock()
         }
         else {
-            check(delivered.size == 0)
+            assertTrue(delivered.size == 0)
         }
     }
 
@@ -132,19 +133,20 @@ class BroadcastTest {
             if (!mutex[it].first.isLocked || !mutex[it].second.isLocked) {
                 mutex[it].first.lock()
                 mutex[it].second.lock()
-                check(delivered[it]!!.size == 1)
+                assertTrue(delivered[it]!!.size == 1)
             }
         }
     }
 
-    private suspend fun sendAnswers(process: processId, m: ChannelMessage, c: Channel<ChannelMessage>) {
+    private suspend fun sendAnswers(process: ProcessId, m: ChannelMessage, c: Channel<ChannelMessage>) {
         when (m) {
             is Bcast -> c.send(Echo(process, m.message))
             is Echo -> c.send(Ready(process, m.message))
         }
     }
 
-    private fun createIntactSets(intactSetId: Int, ds: DistributedSystem<ChannelMessage>, delivered: MutableSet<Message>): Pair<Mutex, Mutex> {
+    private fun createIntactSets(intactSetId: Int, ds: SymmetricDistributedSystemWithoutQI, delivered: MutableSet<Message>):
+            Pair<Mutex, Mutex> {
         val mutex1 = Mutex(true)
         val mutex2 = Mutex(true)
         val processId1 = intactSetId * 2
@@ -158,79 +160,5 @@ class BroadcastTest {
             mutex2.unlock()
         }
         return Pair(mutex1, mutex2)
-    }
-}
-
-suspend fun sendMaliciousMessages(intactSetNumber: Int, ds: DistributedSystem<ChannelMessage>, sameMessagesForIntactSet: Boolean) {
-    val same = if (sameMessagesForIntactSet) 0 else 1
-    val maliciousProcessId = intactSetNumber * 2
-    repeat(intactSetNumber) {
-        ds.getChannel(it * 2).send(Bcast(maliciousProcessId,
-                Message(TransactionInfo(maliciousProcessId, it * 2, 10, 1), setOf())))
-        ds.getChannel(it * 2 + 1).send(Bcast(maliciousProcessId,
-                Message(TransactionInfo(maliciousProcessId, it * 2 + same, 10, 1), setOf())))
-    }
-    repeat(intactSetNumber) {
-        ds.getChannel(it * 2).send(Echo(maliciousProcessId,
-                Message(TransactionInfo(maliciousProcessId, it * 2, 10, 1), setOf())))
-        ds.getChannel(it * 2 + 1).send(Echo(maliciousProcessId,
-                Message(TransactionInfo(maliciousProcessId, it * 2 + same, 10, 1), setOf())))
-    }
-    repeat(intactSetNumber) {
-        ds.getChannel(it * 2).send(Ready(maliciousProcessId,
-                Message(TransactionInfo(maliciousProcessId, it * 2, 10, 1), setOf())))
-        ds.getChannel(it * 2 + 1).send(Ready(maliciousProcessId,
-                Message(TransactionInfo(maliciousProcessId, it * 2 + same, 10, 1), setOf())))
-    }
-}
-
-/**
- * Симметричная система кворумов без требования о пересечении кворумов.
- */
-internal class SymmetricDistributedSystemWithoutQI(private val intactSets: Int = 1) : DistributedSystem<ChannelMessage> {
-    private val channels: MutableMap<processId, Channel<ChannelMessage>> = HashMap()
-    private val qs: MutableMap<processId, FBQS> = HashMap()
-    private val balances: MutableMap<processId, money> = HashMap()
-
-    init {
-        repeat(intactSets * 2) {
-            channels[it] = Channel(Channel.UNLIMITED)
-        }
-        channels[intactSets * 2] = Channel(Channel.UNLIMITED)
-        repeat(intactSets * 2) {
-            qs[it] = SymmetricFBQS()
-        }
-        qs[intactSets * 2] = SymmetricFBQS()
-        repeat(intactSets * 2) {
-            balances[it] = 100
-        }
-        balances[intactSets * 2] = 100
-    }
-
-    override fun getProcesses(): Set<processId> = channels.keys
-
-    override fun getChannels(): Map<processId, Channel<ChannelMessage>> = channels
-
-    override fun getQuorumSystem(): Map<processId, FBQS> = qs
-
-    override fun getBalances(): Map<processId, money> = balances
-
-    private inner class SymmetricFBQS : FBQS {
-        override fun hasQuorum(process: processId, processes: Set<processId>): Boolean {
-            var hasQuorum = false
-            repeat(intactSets) {
-                hasQuorum = hasQuorum || processes.containsAll(setOf(it * 2, it * 2 + 1)) && (process == it * 2 || process == it * 2 + 1)
-            }
-            return hasQuorum
-        }
-
-        override fun hasBlockingSet(process: processId, processes: Set<processId>): Boolean {
-            var hasBlockingSet = false
-            repeat(intactSets) {
-                hasBlockingSet = hasBlockingSet || processes.contains(it * 2) && process == it * 2 + 1 ||
-                        processes.contains(it * 2 + 1) && process == it * 2
-            }
-            return hasBlockingSet
-        }
     }
 }

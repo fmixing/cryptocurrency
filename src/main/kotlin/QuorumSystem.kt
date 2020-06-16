@@ -2,10 +2,10 @@ interface FBQS {
     /**
      * Проверяет, есть ли в множестве процессов [processes] кворум указанного процесса [process]
      */
-    fun hasQuorum(process: processId, processes: Set<processId>) : Boolean
+    fun hasQuorum(process: ProcessId, processes: Set<ProcessId>) : Boolean
 
     /**
      * Проверяет, есть ли в множестве процессов [processes] блокирующее множество указанного процесса [process]
      */
-    fun hasBlockingSet(process: processId, processes: Set<processId>) : Boolean
+    fun hasBlockingSet(process: ProcessId, processes: Set<ProcessId>) : Boolean
 }

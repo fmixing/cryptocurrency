@@ -1,37 +1,33 @@
-import kotlinx.coroutines.channels.*
-import java.lang.IllegalStateException
+typealias ProcessId = Int
+typealias Money = Int
 
-interface DistributedSystem<ChannelMessage> {
+interface DistributedSystem<Channel> {
     /**
      * Получение множества прооцессов распределенной системы.
      */
-    fun getProcesses() : Set<processId>
+    fun getProcesses() : Set<ProcessId>
 
     /**
      * "Надежные" каналы связи, по которым процессы могут слать друг другу сообщения.
      */
-    fun getChannels() : Map<processId, Channel<ChannelMessage>>
+    fun getChannels() : Map<ProcessId, Channel>
 
     /**
      * Асимметричная система кворумов, в ней для каждого процесса задается своя система кворумов.
      */
-    fun getQuorumSystem() : Map<processId, FBQS>
+    fun getQuorumSystem() : Map<ProcessId, FBQS>
 
     /**
      * Исходные балансы процессов.
      */
-    fun getBalances() : Map<processId, money>
+    fun getBalances() : Map<ProcessId, Money>
 }
 
-typealias processId = Int
+fun <Channel> DistributedSystem<Channel>.getChannel(process: ProcessId) = getChannels()[process]
+        ?: error("Process $process doesn't exist")
 
-typealias money = Int
+fun <Channel> DistributedSystem<Channel>.getBalance(process: ProcessId) = getBalances()[process]
+        ?: error("Process $process doesn't exist")
 
-fun <CM> DistributedSystem<CM>.getChannel(process: processId) = getChannels()[process]
-        ?: throw IllegalStateException("Process $process doesn't exist")
-
-fun <CM> DistributedSystem<CM>.getBalance(process: processId) = getBalances()[process]
-        ?: throw IllegalStateException("Process $process doesn't exist")
-
-fun <CM> DistributedSystem<CM>.getProcessQuorumSystem(process: processId) = getQuorumSystem()[process]
-        ?: throw IllegalStateException("Process $process doesn't exist")
+fun <Channel> DistributedSystem<Channel>.getProcessQuorumSystem(process: ProcessId) = getQuorumSystem()[process]
+        ?: error("Process $process doesn't exist")

@@ -2,6 +2,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.*
 import kotlinx.coroutines.selects.*
 import org.junit.*
+import org.junit.jupiter.api.Assertions.*
 
 class CryptocurrencyTest {
     /**
@@ -21,9 +22,9 @@ class CryptocurrencyTest {
             }
         }
         val successful = cryptocurrency.transfer(1, 10)
-        check(successful)
-        check(cryptocurrency.read(0) == ds.getBalance(0) - 10)
-        check(cryptocurrency.read(1) == ds.getBalance(1) + 10)
+        assertTrue(successful)
+        assertTrue(cryptocurrency.read(0) == ds.getBalance(0) - 10)
+        assertTrue(cryptocurrency.read(1) == ds.getBalance(1) + 10)
     }
 
     /**
@@ -42,9 +43,9 @@ class CryptocurrencyTest {
             }
         }
         val successful = cryptocurrency.transfer(1, 110)
-        check(!successful)
-        check(cryptocurrency.read(0) == ds.getBalance(0))
-        check(cryptocurrency.read(1) == ds.getBalance(1))
+        assertTrue(!successful)
+        assertTrue(cryptocurrency.read(0) == ds.getBalance(0))
+        assertTrue(cryptocurrency.read(1) == ds.getBalance(1))
     }
 
     /**
@@ -65,8 +66,8 @@ class CryptocurrencyTest {
         }
         ds.getChannel(0).send(Bcast(1, Message(TransactionInfo(1, 0, 10, 1), setOf())))
         delay(100)
-        check(cryptocurrency.read(0) == ds.getBalance(0) + 10)
-        check(cryptocurrency.read(1) == ds.getBalance(1) - 10)
+        assertTrue(cryptocurrency.read(0) == ds.getBalance(0) + 10)
+        assertTrue(cryptocurrency.read(1) == ds.getBalance(1) - 10)
     }
 
     /**
@@ -87,8 +88,8 @@ class CryptocurrencyTest {
         }
         ds.getChannel(0).send(Bcast(1, Message(TransactionInfo(1, 0, 10, 2), setOf())))
         delay(100)
-        check(cryptocurrency.read(0) == ds.getBalance(0))
-        check(cryptocurrency.read(1) == ds.getBalance(1))
+        assertTrue(cryptocurrency.read(0) == ds.getBalance(0))
+        assertTrue(cryptocurrency.read(1) == ds.getBalance(1))
     }
 
     /**
@@ -108,12 +109,12 @@ class CryptocurrencyTest {
         sendMaliciousMessages(intactSets,  ds, false)
         delay(100)
         val sum = cryptocurrencies.map { cryptocurrency -> cryptocurrency.read(cryptocurrency.process) }.sum()
-        check(sum == initialSum)
+        assertTrue(sum == initialSum)
     }
 
     /**
      * Тест, что деньги могут потратиться не более K раз (K – количество покрытий кликами графа на процессах.
-     * В описанной FBQS в [SymmetricDistributedSystem] нетронутое множество будет одной кликой, то есть покрытие будет
+     * В описанной FBQS в [SymmetricDistributedSystemWithoutQI] нетронутое множество будет одной кликой, то есть покрытие будет
      * числом нетронутых множеств кликами.
      */
     @InternalCoroutinesApi
@@ -130,10 +131,10 @@ class CryptocurrencyTest {
         sendMaliciousMessages(intactSets,  ds, true)
         delay(300)
         val sum = cryptocurrencies.map { cryptocurrency -> cryptocurrency.read(cryptocurrency.process) }.sum()
-        check(sum <= initialSum + 10 * intactSets)
+        assertTrue(sum <= initialSum + 10 * intactSets)
     }
 
-    private suspend fun sendAnswers(process: processId, m: ChannelMessage, c: Channel<ChannelMessage>) {
+    private suspend fun sendAnswers(process: ProcessId, m: ChannelMessage, c: Channel<ChannelMessage>) {
         when (m) {
             is Bcast -> c.send(Echo(process, m.message))
             is Echo -> c.send(Ready(process, m.message))

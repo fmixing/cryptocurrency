@@ -3,10 +3,18 @@
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.*
 import kotlinx.coroutines.scheduling.*
-import kotlin.random.*
+import kotlin.collections.HashMap
+import kotlin.random.Random
 
 @InternalCoroutinesApi
 private val context = ExperimentalCoroutineDispatcher(corePoolSize = 2, maxPoolSize = 2)
+
+/**
+ * Options:
+ *  1. SymmetricDistributedSystem
+ *  2. MajoritySymmetricDistributedSystem
+ */
+private val dsCreator: () -> DistributedSystem<Channel<ChannelMessage>> = { SymmetricDistributedSystem() }
 
 /**
  * Проверяем, что для распределенной системы, где все процессы корректные, предложенные алгоритмы работают.
@@ -17,18 +25,19 @@ private val context = ExperimentalCoroutineDispatcher(corePoolSize = 2, maxPoolS
  * Сначала мы проверяем, что все корутины действительно остановятся: это значит, что в этой системе кворумов
  * есть живучесть.
  * После этого проверяем, что изначальная сумма денег, распределенная по аккаунтам, равна итоговой сумме денег,
- * распределенной по аккаунтам. То есть деньги никуда не пропали и не появились из воздуха. То же самое проверяем для
- * локального виденья состояния системы каждым из участников.
+ * распределенной по аккаунтам. То есть деньги никуда не пропали и не появились из воздуха.
+ * После этого строим глобальную упорядоченную историю по зависимостям транзакции методом [getTotalOrderedHistory].
+ * Выполняем ее последовательно, убеждаемся, что в любой момент времени баланс не меньше нуля.
  */
 @InternalCoroutinesApi
 fun main() {
-    val symmetricDistributedSystem = SymmetricDistributedSystem()
-    val totalBalance = symmetricDistributedSystem.getBalances().map { it.value }.sum()
-    val processes = symmetricDistributedSystem
+    val distributedSystem = dsCreator.invoke()
+    val totalBalance = distributedSystem.getBalances().map { it.value }.sum()
+    val processes = distributedSystem
             .getProcesses()
             .map {
-                val c = Cryptocurrency(symmetricDistributedSystem, it)
-                Process(it, c, symmetricDistributedSystem.getProcesses(), totalBalance)
+                val c = Cryptocurrency(distributedSystem, it)
+                CorrectProcess(it, c, distributedSystem.getProcesses(), totalBalance)
             }
             .toList()
 
@@ -40,27 +49,54 @@ fun main() {
     processes.forEach { it.stopScenario() }
     println("Stopped all processes")
 
+    checkLiveness(processes)
+    checkSafety(processes, distributedSystem)
+}
+
+private fun checkLiveness(processes: List<CorrectProcess>) {
     runBlocking {
         for (process in processes) {
             process.runCoroutine.join()
         }
-        val currentTotalBalance = processes.map{ it.getBalance() }.sum()
-
-        check(currentTotalBalance == totalBalance)
-        println("Current total balance $currentTotalBalance")
-        processes.forEach { println("process ${it.processId} has balance ${it.getBalance()}") }
-
-        processes.forEach { process ->
-            val processBalances = processes.map { process.getBalance(it.processId) }.sum()
-            check(processBalances == totalBalance)
-        }
     }
 }
 
-private class Process(val processId: processId,
-                      private val cryptocurrency: Cryptocurrency,
-                      processes: Set<processId>,
-                      private val totalBalance: Int) {
+private fun checkSafety(processes: List<CorrectProcess>, distributedSystem: DistributedSystem<Channel<ChannelMessage>>) {
+    val initialBalance = distributedSystem.getBalances().map { it.value }.sum()
+    val currentTotalBalance = processes.map{ it.getBalance() }.sum()
+
+    // Проверяем, что деньги не испарились или не появились из воздуха
+    check(currentTotalBalance == initialBalance)
+    println("Current total balance $currentTotalBalance")
+    processes.forEach { println("process ${it.processId} has balance ${it.getBalance()}") }
+
+    // Проверяем, что у каждого процесса локально деньги не испарились или не появились из воздуха
+    processes.forEach { process ->
+        val processBalances = processes.map { process.getBalance(it.processId) }.sum()
+        check(processBalances == initialBalance)
+    }
+
+    // Получаем тотально упорядоченную историю
+    val history = getTotalOrderedHistory(processes.map { it.cryptocurrency }.toTypedArray())
+
+    val cryptocurrencyObject = IntArray(distributedSystem.getProcesses().size)
+    repeat(distributedSystem.getProcesses().size) {
+        cryptocurrencyObject[it] = distributedSystem.getBalance(it)
+    }
+    // Выполняем успешные операции перевода над объектом критовалюты в порядке тотально упорядоченной истории.
+    // Проверяем, что очередная транзакция не нарушает требование на неотрицательность аккаунта.
+    for (transfer in history) {
+        cryptocurrencyObject[transfer.sender] -= transfer.transferValue
+        cryptocurrencyObject[transfer.receiver] += transfer.transferValue
+        check(cryptocurrencyObject[transfer.sender] >= 0)
+    }
+    processes.forEach { check(cryptocurrencyObject[it.processId] == it.getBalance()) }
+}
+
+class CorrectProcess(val processId: ProcessId,
+                     val cryptocurrency: Cryptocurrency,
+                     processes: Set<ProcessId>,
+                     private val totalBalance: Int) {
     private val otherProcesses = processes.filter { it != processId }.toList()
 
     @Volatile
@@ -80,9 +116,9 @@ private class Process(val processId: processId,
         }
     }
 
-    suspend fun getBalance() = cryptocurrency.read(processId)
+    fun getBalance() = runBlocking { cryptocurrency.read(processId) }
 
-    suspend fun getBalance(processId: processId) = cryptocurrency.read(processId)
+    fun getBalance(processId: ProcessId) = runBlocking { cryptocurrency.read(processId) }
 
     fun stopScenario() {
         stopped = true
@@ -93,10 +129,10 @@ private class Process(val processId: processId,
  * Распределенная система с симметричной системой кворумов, в которой кворумы описаны множествами процессов,
  * построенными на кворумных слайсах.
  */
-private class SymmetricDistributedSystem : DistributedSystem<ChannelMessage> {
-    private val channels = HashMap<processId, Channel<ChannelMessage>>()
-    private val qs: MutableMap<processId, FBQS> = HashMap()
-    private val balances: MutableMap<processId, money> = HashMap()
+private class SymmetricDistributedSystem : DistributedSystem<Channel<ChannelMessage>> {
+    private val channels = HashMap<ProcessId, Channel<ChannelMessage>>()
+    private val qs: MutableMap<ProcessId, FBQS> = HashMap()
+    private val balances: MutableMap<ProcessId, Money> = HashMap()
 
     init {
         repeat(4) {
@@ -110,19 +146,19 @@ private class SymmetricDistributedSystem : DistributedSystem<ChannelMessage> {
         }
     }
 
-    override fun getProcesses(): Set<processId> {
+    override fun getProcesses(): Set<ProcessId> {
         return channels.keys
     }
 
-    override fun getChannels(): Map<processId, Channel<ChannelMessage>> {
+    override fun getChannels(): Map<ProcessId, Channel<ChannelMessage>> {
         return channels
     }
 
-    override fun getQuorumSystem(): Map<processId, FBQS> {
+    override fun getQuorumSystem(): Map<ProcessId, FBQS> {
         return qs
     }
 
-    override fun getBalances(): Map<processId, Int> {
+    override fun getBalances(): Map<ProcessId, Int> {
         return balances
     }
 
@@ -134,7 +170,7 @@ private class SymmetricDistributedSystem : DistributedSystem<ChannelMessage> {
         private val q3 = setOf(0, 2, 3)
         private val q4 = setOf(0, 1, 2, 3)
 
-        override fun hasQuorum(process: processId, processes: Set<processId>): Boolean {
+        override fun hasQuorum(process: ProcessId, processes: Set<ProcessId>): Boolean {
             return when (process) {
                 0 -> processes.containsAll(q1) || processes.containsAll(q2) || processes.containsAll(q3) || processes.containsAll(q4)
                 1 -> processes.containsAll(q1) || processes.containsAll(q2) || processes.containsAll(q4)
@@ -144,7 +180,7 @@ private class SymmetricDistributedSystem : DistributedSystem<ChannelMessage> {
             }
         }
 
-        override fun hasBlockingSet(process: processId, processes: Set<processId>): Boolean {
+        override fun hasBlockingSet(process: ProcessId, processes: Set<ProcessId>): Boolean {
             // Кворумные слайсы:
             // S(0) = {{0, 1}, {0, 3}}
             // S(1) = {{0, 1}}
@@ -164,10 +200,10 @@ private class SymmetricDistributedSystem : DistributedSystem<ChannelMessage> {
 /**
  * Распределенная система с "мажоритарной" системой кворумов: в ней кворумом считается больше половины процессов.
  */
-class MajoritySymmetricDistributedSystem(private val numberOfProcesses: Int = 20) : DistributedSystem<ChannelMessage> {
-    private val channels: MutableMap<processId, Channel<ChannelMessage>> = HashMap()
-    private val qs: MutableMap<processId, FBQS> = HashMap()
-    private val balances: MutableMap<processId, money> = HashMap()
+class MajoritySymmetricDistributedSystem(private val numberOfProcesses: Int = 20) : DistributedSystem<Channel<ChannelMessage>> {
+    private val channels: MutableMap<ProcessId, Channel<ChannelMessage>> = HashMap()
+    private val qs: MutableMap<ProcessId, FBQS> = HashMap()
+    private val balances: MutableMap<ProcessId, Money> = HashMap()
 
     init {
         repeat(numberOfProcesses) {
@@ -181,20 +217,20 @@ class MajoritySymmetricDistributedSystem(private val numberOfProcesses: Int = 20
         }
     }
 
-    override fun getProcesses(): Set<processId> = channels.keys
+    override fun getProcesses(): Set<ProcessId> = channels.keys
 
-    override fun getChannels(): Map<processId, Channel<ChannelMessage>> = channels
+    override fun getChannels(): Map<ProcessId, Channel<ChannelMessage>> = channels
 
-    override fun getQuorumSystem(): Map<processId, FBQS> = qs
+    override fun getQuorumSystem(): Map<ProcessId, FBQS> = qs
 
-    override fun getBalances(): Map<processId, money> = balances
+    override fun getBalances(): Map<ProcessId, Money> = balances
 
     private inner class SymmetricFBQS : FBQS {
-        override fun hasQuorum(process: processId, processes: Set<processId>): Boolean {
+        override fun hasQuorum(process: ProcessId, processes: Set<ProcessId>): Boolean {
             return processes.contains(process) && processes.size > numberOfProcesses / 2
         }
 
-        override fun hasBlockingSet(process: processId, processes: Set<processId>): Boolean {
+        override fun hasBlockingSet(process: ProcessId, processes: Set<ProcessId>): Boolean {
             return processes.size > numberOfProcesses / 2
         }
     }

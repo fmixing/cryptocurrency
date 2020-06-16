@@ -6,10 +6,12 @@ import java.util.*
 import java.util.concurrent.*
 import kotlin.collections.HashSet
 
+typealias History = ConcurrentMap<ProcessId, MutableSet<TransactionInfo>>
+
 @InternalCoroutinesApi
 private val context = ExperimentalCoroutineDispatcher(corePoolSize = 2, maxPoolSize = 2)
 
-class TransactionInfo(val sender: processId, val receiver: processId, val transferValue: money, val transferId: Int)
+data class TransactionInfo(val sender: ProcessId, val receiver: ProcessId, val transferValue: Money, val transferId: Int)
 
 /**
  * Реализация алгоритма перевода активов (алгоритма криптовалюты) без реализации протокола консенсуса из статьи
@@ -20,8 +22,8 @@ class TransactionInfo(val sender: processId, val receiver: processId, val transf
  * или нет. Было показано, что для симметричной системы кворумов отсутствует двойное расходование.
  * В моей работе рассматривается эта задача (задача криптовалюты) в асимметричных системах кворумов.
  */
-class Cryptocurrency(private val ds: DistributedSystem<ChannelMessage>,
-                     val process: processId) {
+class Cryptocurrency(private val ds: DistributedSystem<Channel<ChannelMessage>>,
+                     val process: ProcessId) {
     private val broadcast : Broadcast = Broadcast(process, ds.getChannel(process), ds.getProcessQuorumSystem(process),
             ds.getChannels(), this::deliver)
 
@@ -38,7 +40,7 @@ class Cryptocurrency(private val ds: DistributedSystem<ChannelMessage>,
     /**
      * Множество провалидированных процессом [processMessage] входящих и исходящих транзакций.
      */
-    private val hist: ConcurrentMap<processId, MutableSet<TransactionInfo>> = ConcurrentHashMap()
+    private val hist: History = ConcurrentHashMap()
 
     /**
      * Множество входящих транзакций процесса [processMessage] с момента прошлого успешного перевода денег через операцию [transfer].
@@ -54,7 +56,7 @@ class Cryptocurrency(private val ds: DistributedSystem<ChannelMessage>,
      * Сообщения от каждого из процессов системы, которые процесс [processMessage] должен обработать в порядке source order
      * (то есть все процессы системы обязаны их обработать в одном и том же порядке).
      */
-    private val messageToDeliver: ConcurrentMap<processId, TreeSet<Message>> = ConcurrentHashMap()
+    private val messageToDeliver: ConcurrentMap<ProcessId, TreeSet<Message>> = ConcurrentHashMap()
 
     /**
      * Мьютекс, играющий роль CountDownLatch: он позволяет сообщать из корутины [validatingCoroutine], что перевод
@@ -74,13 +76,19 @@ class Cryptocurrency(private val ds: DistributedSystem<ChannelMessage>,
      */
     private val mutex = Mutex()
 
+    /**
+     * Для тестов. В множестве находятся все провалидированные сообщения.
+     */
+    @Deprecated("Only for tests")
+    private val validatedMessages = HashSet<Message>()
+
     @ExperimentalCoroutinesApi
     @InternalCoroutinesApi
     private val validatingCoroutine = CoroutineScope(context).launch { processToValidate() }
 
-    suspend fun read(process: processId): Int = mutex.withLock { balance(process) }
+    suspend fun read(process: ProcessId): Int = mutex.withLock { balance(process) }
 
-    suspend fun transfer(receiver: processId, transferValue: Int) : Boolean = mutex.withLock {
+    suspend fun transfer(receiver: ProcessId, transferValue: Int) : Boolean = mutex.withLock {
         if (balance(process) < transferValue) {
             return false
         }
@@ -94,14 +102,14 @@ class Cryptocurrency(private val ds: DistributedSystem<ChannelMessage>,
     }
 
     private suspend fun deliver(m: Message) {
-        val messages = messageToDeliver.getOrPut(m.sender) { TreeSet(compareBy { it.transferId }) }
+        val messages = messageToDeliver.getOrPut(m.sender()) { TreeSet(compareBy{ it.transferId() }) }
         messages += m
 
         val iterator = messages.iterator()
         var firstMessage = iterator.next()
 
-        while (firstMessage.transferId == rec[m.sender] + 1) {
-            rec[m.sender] += 1
+        while (firstMessage.transferId() == rec[m.sender()] + 1) {
+            rec[m.sender()] += 1
             messagesToValidate.send(m)
 
             iterator.remove()
@@ -126,37 +134,48 @@ class Cryptocurrency(private val ds: DistributedSystem<ChannelMessage>,
         val validated = validate(m)
         if (!validated) return false
 
-        hist.getOrPut(m.sender) { HashSet() } += m.deps
-        hist.getOrPut(m.sender) { HashSet() } += m.transactionInfo
-        seq[m.sender] = m.transferId
-        hist.getOrPut(m.receiver) { HashSet() } += m.transactionInfo
+        hist.add(m.sender(), m.deps)
+        hist.add(m.sender(), m.transactionInfo)
+        seq[m.sender()] = m.transferId()
+        hist.add(m.receiver(), m.transactionInfo)
+        validatedMessages += m
 
-        if (process == m.receiver) {
+        if (process == m.receiver()) {
             deps += m.transactionInfo
         }
-        if (process == m.sender) {
+        if (process == m.sender()) {
             waitingTransactionCompletion.unlock()
         }
         return true
     }
 
     private fun validate(m: Message): Boolean {
-        val hist = hist.getOrPut(m.sender) { HashSet() }
-        return seq[m.sender] + 1 == m.transferId // эта транзакция следующая за той, которую процесс уже провалидировал
-                && balance(m.sender) >= m.transferValue // на аккаунте процесса хватает денег
-                && m.deps.map { hist.contains(it) }.all{it} // все зависимости транзакции процесс уже провалидировал
+        return seq[m.sender()] + 1 == m.transferId() // эта транзакция следующая за той, которую процесс уже провалидировал
+                && balance(m.sender()) >= m.transferValue() // на аккаунте процесса хватает денег
+                && m.deps.map { hist.contains(m.sender(), it) }.all{it} // все зависимости транзакции процесс уже провалидировал
     }
 
-    private fun balance(process: processId): Int {
-        val hist = hist.getOrPut(process) { HashSet() }
-        val outgoing = hist.stream()
-                .filter { info -> info.sender == process }
-                .mapToInt { it.transferValue }
-                .sum()
-        val incoming = hist.stream()
-                .filter { info -> info.receiver == process }
-                .mapToInt { it.transferValue }
-                .sum()
+    private fun balance(process: ProcessId): Int {
+        val outgoing = hist.outgoing(process)
+        val incoming = hist.incoming(process)
         return ds.getBalance(process) + incoming - outgoing
     }
 }
+
+private fun <T> ConcurrentMap<ProcessId, MutableSet<T>>.getSafely(process: ProcessId) = getOrPut(process) { HashSet() }
+
+private fun History.outgoing(process: ProcessId) = getSafely(process)
+        .filter { info -> info.sender == process }
+        .map { it.transferValue }
+        .sum()
+
+private fun History.incoming(process: ProcessId) = getSafely(process)
+        .filter { info -> info.receiver == process }
+        .map { it.transferValue }
+        .sum()
+
+private fun History.add(process: ProcessId, transactions: Set<TransactionInfo>) = getSafely(process).addAll(transactions)
+
+private fun History.add(process: ProcessId, transaction: TransactionInfo) = getSafely(process).add(transaction)
+
+private fun History.contains(process: ProcessId, transaction: TransactionInfo) = getSafely(process).contains(transaction)
