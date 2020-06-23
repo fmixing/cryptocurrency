@@ -131,5 +131,3 @@ internal fun Message.receiver() = transactionInfo.receiver
 internal fun Message.transferId() = transactionInfo.transferId
 
 internal fun Message.transferValue() = transactionInfo.transferValue
-
-// todo: добавить typealiaces на received[BCast/Echo/Ready] и другие поля
